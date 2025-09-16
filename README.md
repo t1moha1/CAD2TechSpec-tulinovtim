@@ -1,5 +1,8 @@
 # CAD2TechSpec
 
+![CAD2TechSpec overview](https://github.com/Maxiiiiim/3dLLM_Lambda/blob/main/Framework%20CAD2TechSpec.png)
+CAD2TechSpec is a novel framework for automating design processes within CAD systems by leveraging multimodal large language models (LLMs). The framework enables the analysis and generation of detailed design specifications, including the automated creation of machining process plans. Our system architecture combines 3D model rendering, dimensionality reduction techniques, and the capabilities of multimodal LLMs to produce structured JSON representations of manufacturing workflows. Experiments conducted on the ABC dataset demonstrate that CAD2TechSpec significantly reduces design time while enhancing the accuracy and completeness of technical specifications. The proposed approach holds considerable promise for high-tech industries such as aerospace and mechanical engineering, where efficiency and precision in design processes are critical.
+
 ## Folder Descriptions
 The 'abc_dataset' folder contains data from the ABC dataset (https://archive.nyu.edu/handle/2451/44309);
 
@@ -22,6 +25,7 @@ blender -b -P render_script_type1.py -- --object_path_pkl './example_material/ex
 # Create 20 views
 blender -b -P render_script_type2.py -- --object_path_pkl './example_material/example_object_path.pkl' --parent_dir './example_material'
 ```
+The scripts **'render_script_type1.py'** and **'render_script_type2.py'** were adapted from the automatic method Cap3D (available at https://github.com/tiangeluo/DiffuRank?tab=readme-ov-file).
 
 Next, you should run the **'framework.py'** file, which performs the following tasks:
    - Selects 3, 4, or 6 different images of the model from various angles and combines them into a single image.
