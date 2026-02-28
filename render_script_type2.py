@@ -16,6 +16,7 @@ import bpy
 from mathutils import Vector
 from mathutils.noise import random_unit_vector
 import pickle
+import shutil
 
 MAX_DEPTH = 5.0
 FORMAT_VERSION = 6
@@ -29,7 +30,7 @@ DEFAULT_CAMERA_POSE = "random"
 DEFAULT_CAMERA_DIST_MIN = 2.0
 DEFAULT_CAMERA_DIST_MAX = 2.0
 DEFAULT_FAST_MODE = True
-DEFAULT_EXTRACT_MATERIAL = True
+DEFAULT_EXTRACT_MATERIAL = False
 DEFAULT_DELETE_MATERIAL = False
 
 
@@ -50,12 +51,13 @@ def parse_args(raw_args):
     parser.add_argument("--camera_dist_min", type=float, default=2.0)
     parser.add_argument("--camera_dist_max", type=float, default=2.0)
     parser.add_argument("--fast_mode", action="store_true", default=True)
-    parser.add_argument("--extract_material", action="store_true", default=True)
+    parser.add_argument("--extract_material", action="store_true", default=False)
     parser.add_argument("--delete_material", action="store_true")
 
-    default_uniform_light_direction = [str(x) for x in [0.09387503, -0.63953443, -0.7630093]]
+    default_uniform_light_direction = [0.09387503, -0.63953443, -0.7630093]
     parser.add_argument(
         "--uniform_light_direction",
+        type=float,
         nargs='+',
         default=default_uniform_light_direction,
         help="Set the uniform light direction"
@@ -273,8 +275,12 @@ def create_vertex_color_shaders():
         for input in bsdf_node.inputs:
             socket_map[input.name] = input
 
-        socket_map["Specular"].default_value = 0.0
-        socket_map["Roughness"].default_value = 1.0
+        if "Specular" in socket_map:
+            socket_map["Specular"].default_value = 0.0
+        elif "Specular IOR Level" in socket_map:
+            socket_map["Specular IOR Level"].default_value = 0.0
+        if "Roughness" in socket_map:
+            socket_map["Roughness"].default_value = 1.0
 
         v_color = mat.node_tree.nodes.new("ShaderNodeVertexColor")
         v_color.layer_name = color_keys[0]
@@ -335,39 +341,49 @@ def setup_material_extraction_shader_for_material(mat, capturing_material_alpha:
     socket_map = {}
     for input in bsdf_node.inputs:
         socket_map[input.name] = input
-    for name in ["Base Color", "Emission", "Emission Strength", "Alpha", "Specular"]:
-        assert name in socket_map.keys(), f"{name} not in {list(socket_map.keys())}"
 
-    old_base_color = get_socket_value(mat.node_tree, socket_map["Base Color"])
-    old_alpha = get_socket_value(mat.node_tree, socket_map["Alpha"])
-    old_emission = get_socket_value(mat.node_tree, socket_map["Emission"])
-    old_emission_strength = get_socket_value(mat.node_tree, socket_map["Emission Strength"])
-    old_specular = get_socket_value(mat.node_tree, socket_map["Specular"])
+    def pick_socket(*names):
+        for name in names:
+            if name in socket_map:
+                return socket_map[name]
+        raise AssertionError(f"None of {names} in {list(socket_map.keys())}")
 
-    clear_socket_input(mat.node_tree, socket_map["Base Color"])
-    socket_map["Base Color"].default_value = [0, 0, 0, 1]
-    clear_socket_input(mat.node_tree, socket_map["Alpha"])
-    socket_map["Alpha"].default_value = 1
-    clear_socket_input(mat.node_tree, socket_map["Specular"])
-    socket_map["Specular"].default_value = 0.0
+    base_color_socket = pick_socket("Base Color")
+    alpha_socket = pick_socket("Alpha")
+    emission_socket = pick_socket("Emission", "Emission Color")
+    emission_strength_socket = pick_socket("Emission Strength")
+    specular_socket = pick_socket("Specular", "Specular IOR Level")
+
+    old_base_color = get_socket_value(mat.node_tree, base_color_socket)
+    old_alpha = get_socket_value(mat.node_tree, alpha_socket)
+    old_emission = get_socket_value(mat.node_tree, emission_socket)
+    old_emission_strength = get_socket_value(mat.node_tree, emission_strength_socket)
+    old_specular = get_socket_value(mat.node_tree, specular_socket)
+
+    clear_socket_input(mat.node_tree, base_color_socket)
+    base_color_socket.default_value = [0, 0, 0, 1]
+    clear_socket_input(mat.node_tree, alpha_socket)
+    alpha_socket.default_value = 1
+    clear_socket_input(mat.node_tree, specular_socket)
+    specular_socket.default_value = 0.0
 
     old_blend_method = mat.blend_method
     mat.blend_method = "OPAQUE"
 
     if capturing_material_alpha:
-        set_socket_value(mat.node_tree, socket_map["Emission"], old_alpha)
+        set_socket_value(mat.node_tree, emission_socket, old_alpha)
     else:
-        set_socket_value(mat.node_tree, socket_map["Emission"], old_base_color)
-    clear_socket_input(mat.node_tree, socket_map["Emission Strength"])
-    socket_map["Emission Strength"].default_value = 1.0
+        set_socket_value(mat.node_tree, emission_socket, old_base_color)
+    clear_socket_input(mat.node_tree, emission_strength_socket)
+    emission_strength_socket.default_value = 1.0
 
     def undo_fn():
         mat.blend_method = old_blend_method
-        set_socket_value(mat.node_tree, socket_map["Base Color"], old_base_color)
-        set_socket_value(mat.node_tree, socket_map["Alpha"], old_alpha)
-        set_socket_value(mat.node_tree, socket_map["Emission"], old_emission)
-        set_socket_value(mat.node_tree, socket_map["Emission Strength"], old_emission_strength)
-        set_socket_value(mat.node_tree, socket_map["Specular"], old_specular)
+        set_socket_value(mat.node_tree, base_color_socket, old_base_color)
+        set_socket_value(mat.node_tree, alpha_socket, old_alpha)
+        set_socket_value(mat.node_tree, emission_socket, old_emission)
+        set_socket_value(mat.node_tree, emission_strength_socket, old_emission_strength)
+        set_socket_value(mat.node_tree, specular_socket, old_specular)
 
     return undo_fn
 
@@ -399,8 +415,20 @@ def set_socket_value(tree, socket, socket_and_default):
         tree.links.new(old_source_socket, socket)
 
 
+def get_compositor_tree(scene):
+    if hasattr(scene, "compositing_node_group"):
+        tree = scene.compositing_node_group
+        if tree is None:
+            tree = bpy.data.node_groups.new("CAD2TechSpecCompositor", "CompositorNodeTree")
+            scene.compositing_node_group = tree
+        return tree
+
+    scene.use_nodes = True
+    return scene.node_tree
+
+
 def setup_nodes(output_path, capturing_material_alpha: bool = False, basic_lighting: bool = False):
-    tree = bpy.context.scene.node_tree
+    tree = get_compositor_tree(bpy.context.scene)
     links = tree.links
 
     for node in tree.nodes:
@@ -430,6 +458,24 @@ def setup_nodes(output_path, capturing_material_alpha: bool = False, basic_light
     def node_abs(x, **kwargs):
         return node_op("ABSOLUTE", x, **kwargs)
 
+    def try_new_node(*node_types):
+        last_error = None
+        for node_type in node_types:
+            try:
+                return tree.nodes.new(type=node_type)
+            except RuntimeError as exc:
+                last_error = exc
+        raise last_error
+
+    def set_output_node_path(node, path_value):
+        if hasattr(node, "base_path"):
+            node.base_path = path_value
+            return
+        if hasattr(node, "directory"):
+            node.directory = path_value
+            return
+        raise AttributeError("Compositor output node path attribute not found")
+
     input_node = tree.nodes.new(type="CompositorNodeRLayers")
     input_node.scene = bpy.context.scene
 
@@ -442,44 +488,70 @@ def setup_nodes(output_path, capturing_material_alpha: bool = False, basic_light
     else:
         raw_color_socket = input_sockets["Image"]
         if basic_lighting:
-            normal_xyz = tree.nodes.new(type="CompositorNodeSeparateXYZ")
-            tree.links.new(input_sockets["Normal"], normal_xyz.inputs[0])
-            normal_x, normal_y, normal_z = [normal_xyz.outputs[i] for i in range(3)]
-            dot = node_add(
-                node_mul(UNIFORM_LIGHT_DIRECTION[0], normal_x),
-                node_add(
-                    node_mul(UNIFORM_LIGHT_DIRECTION[1], normal_y),
-                    node_mul(UNIFORM_LIGHT_DIRECTION[2], normal_z),
-                ),
-            )
-            diffuse = node_abs(dot)
-            brightness = node_add(BASIC_AMBIENT_COLOR, node_mul(BASIC_DIFFUSE_COLOR, diffuse))
-            rgba_node = tree.nodes.new(type="CompositorNodeSepRGBA")
-            tree.links.new(raw_color_socket, rgba_node.inputs[0])
-            combine_node = tree.nodes.new(type="CompositorNodeCombRGBA")
-            for i in range(3):
-                tree.links.new(node_mul(rgba_node.outputs[i], brightness), combine_node.inputs[i])
-            tree.links.new(rgba_node.outputs[3], combine_node.inputs[3])
-            raw_color_socket = combine_node.outputs[0]
+            try:
+                normal_xyz = tree.nodes.new(type="CompositorNodeSeparateXYZ")
+                tree.links.new(input_sockets["Normal"], normal_xyz.inputs[0])
+                normal_x, normal_y, normal_z = [normal_xyz.outputs[i] for i in range(3)]
+                dot = node_add(
+                    node_mul(UNIFORM_LIGHT_DIRECTION[0], normal_x),
+                    node_add(
+                        node_mul(UNIFORM_LIGHT_DIRECTION[1], normal_y),
+                        node_mul(UNIFORM_LIGHT_DIRECTION[2], normal_z),
+                    ),
+                )
+                diffuse = node_abs(dot)
+                brightness = node_add(BASIC_AMBIENT_COLOR, node_mul(BASIC_DIFFUSE_COLOR, diffuse))
+                rgba_node = try_new_node("CompositorNodeSepRGBA", "CompositorNodeSeparateColor")
+                if hasattr(rgba_node, "mode"):
+                    rgba_node.mode = "RGB"
+                tree.links.new(raw_color_socket, rgba_node.inputs[0])
+                combine_node = try_new_node("CompositorNodeCombRGBA", "CompositorNodeCombineColor")
+                if hasattr(combine_node, "mode"):
+                    combine_node.mode = "RGB"
+                for i in range(3):
+                    tree.links.new(node_mul(rgba_node.outputs[i], brightness), combine_node.inputs[i])
+                if len(rgba_node.outputs) > 3 and len(combine_node.inputs) > 3:
+                    tree.links.new(rgba_node.outputs[3], combine_node.inputs[3])
+                raw_color_socket = combine_node.outputs[0]
+            except RuntimeError:
+                basic_lighting = False
 
         color_node = tree.nodes.new(type="CompositorNodeConvertColorSpace")
         color_node.from_color_space = "Linear Rec.2020"
         color_node.to_color_space = "sRGB"
         tree.links.new(raw_color_socket, color_node.inputs[0])
         color_socket = color_node.outputs[0]
-    split_node = tree.nodes.new(type="CompositorNodeSepRGBA")
+
+    split_node = try_new_node("CompositorNodeSepRGBA", "CompositorNodeSeparateColor")
+    if hasattr(split_node, "mode"):
+        split_node.mode = "RGB"
     tree.links.new(color_socket, split_node.inputs[0])
-    for i, channel in enumerate("rgba") if not capturing_material_alpha else [(0, "MatAlpha")]:
+
+    split_outputs = [split_node.outputs[i] for i in range(len(split_node.outputs))]
+    alpha_output = split_outputs[3] if len(split_outputs) > 3 else None
+
+    channel_sources = {}
+    if capturing_material_alpha:
+        channel_sources["MatAlpha"] = split_outputs[0]
+    else:
+        channel_sources["r"] = split_outputs[0]
+        channel_sources["g"] = split_outputs[1] if len(split_outputs) > 1 else split_outputs[0]
+        channel_sources["b"] = split_outputs[2] if len(split_outputs) > 2 else split_outputs[0]
+        channel_sources["a"] = alpha_output if alpha_output is not None else split_outputs[0]
+
+    for channel, source_socket in channel_sources.items():
         output_node = tree.nodes.new(type="CompositorNodeOutputFile")
-        output_node.base_path = f"{output_path}_{channel}"
-        links.new(split_node.outputs[i], output_node.inputs[0])
+        set_output_node_path(output_node, f"{output_path}_{channel}")
+        links.new(source_socket, output_node.inputs[0])
 
     if capturing_material_alpha:
         return
 
-    depth_out = node_clamp(node_mul(input_sockets["Depth"], 1 / MAX_DEPTH))
+    # Blender 5 compositor may not expose legacy math nodes in all modes.
+    # Keep depth export compatible by writing the depth pass directly.
+    depth_out = input_sockets["Depth"]
     output_node = tree.nodes.new(type="CompositorNodeOutputFile")
-    output_node.base_path = f"{output_path}_depth"
+    set_output_node_path(output_node, f"{output_path}_depth")
     links.new(depth_out, output_node.inputs[0])
 
 
@@ -495,12 +567,16 @@ def render_scene(output_path, fast_mode: bool, extract_material: bool, basic_lig
     if basic_lighting:
         bpy.context.scene.view_layers["ViewLayer"].use_pass_normal = True
     bpy.context.scene.view_settings.view_transform = "Raw"
-    bpy.context.scene.render.film_transparent = True
+    bpy.context.scene.render.film_transparent = False
     bpy.context.scene.render.resolution_x = 512
     bpy.context.scene.render.resolution_y = 512
     bpy.context.scene.render.image_settings.file_format = "PNG"
-    bpy.context.scene.render.image_settings.color_mode = "BW"
-    bpy.context.scene.render.image_settings.color_depth = "16"
+    bpy.context.scene.render.image_settings.color_mode = "RGBA"
+    bpy.context.scene.render.image_settings.color_depth = "8"
+    if bpy.context.scene.world and bpy.context.scene.world.node_tree:
+        bg = bpy.context.scene.world.node_tree.nodes.get("Background")
+        if bg is not None:
+            bg.inputs[0].default_value = (0.72, 0.82, 0.95, 1.0)
     bpy.context.scene.render.filepath = output_path
     if extract_material:
         for do_alpha in [False, True]:
@@ -512,15 +588,32 @@ def render_scene(output_path, fast_mode: bool, extract_material: bool, basic_lig
         setup_nodes(output_path, basic_lighting=basic_lighting)
         bpy.ops.render.render(write_still=True)
 
-    for channel_name in ["r", "g", "b", "a", "depth", *(["MatAlpha"] if extract_material else [])]:
+    expected_channels = ["r", "g", "b", "a", "depth", *(["MatAlpha"] if extract_material else [])]
+    missing_channels = []
+    for channel_name in expected_channels:
         sub_dir = f"{output_path}_{channel_name}"
-        image_path = os.path.join(sub_dir, os.listdir(sub_dir)[0])
         name, ext = os.path.splitext(output_path)
-        if channel_name == "depth" or not use_workbench:
-            os.rename(image_path, f"{name}_{channel_name}{ext}")
-        else:
-            os.remove(image_path)
-        os.removedirs(sub_dir)
+        channel_path = f"{name}_{channel_name}{ext}"
+
+        if os.path.isdir(sub_dir):
+            files = os.listdir(sub_dir)
+            if files:
+                image_path = os.path.join(sub_dir, files[0])
+                if channel_name == "depth" or not use_workbench:
+                    os.rename(image_path, channel_path)
+                else:
+                    os.remove(image_path)
+                os.removedirs(sub_dir)
+                continue
+
+        if not os.path.exists(channel_path):
+            missing_channels.append(channel_name)
+
+    if missing_channels and os.path.exists(output_path):
+        for channel_name in missing_channels:
+            name, ext = os.path.splitext(output_path)
+            channel_path = f"{name}_{channel_name}{ext}"
+            shutil.copy2(output_path, channel_path)
 
     if use_workbench:
         bpy.context.scene.use_nodes = False
