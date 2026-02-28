@@ -296,7 +296,42 @@ def create_default_materials():
             if not len(obj.data.materials):
                 mat = bpy.data.materials.new(name="DefaultMaterial")
                 mat.use_nodes = True
+
+                bsdf = None
+                for node in mat.node_tree.nodes:
+                    if node.type == "BSDF_PRINCIPLED":
+                        bsdf = node
+                        break
+                if bsdf is not None:
+                    inputs = {socket.name: socket for socket in bsdf.inputs}
+                    if "Base Color" in inputs:
+                        inputs["Base Color"].default_value = (0.62, 0.64, 0.68, 1.0)
+                    if "Metallic" in inputs:
+                        inputs["Metallic"].default_value = 1.0
+                    if "Roughness" in inputs:
+                        inputs["Roughness"].default_value = 0.2
+
                 obj.data.materials.append(mat)
+
+
+def apply_metallic_look_to_all_materials():
+    for mat in find_materials():
+        mat.use_nodes = True
+        bsdf = None
+        for node in mat.node_tree.nodes:
+            if node.type == "BSDF_PRINCIPLED":
+                bsdf = node
+                break
+        if bsdf is None:
+            continue
+
+        inputs = {socket.name: socket for socket in bsdf.inputs}
+        if "Base Color" in inputs:
+            inputs["Base Color"].default_value = (0.62, 0.64, 0.68, 1.0)
+        if "Metallic" in inputs:
+            inputs["Metallic"].default_value = 1.0
+        if "Roughness" in inputs:
+            inputs["Roughness"].default_value = 0.18
 
 
 def find_materials():
@@ -684,6 +719,8 @@ def save_rendering_dataset(
         create_uniform_light(backend)
     create_camera()
     create_vertex_color_shaders()
+    create_default_materials()
+    apply_metallic_look_to_all_materials()
 
     if delete_material:
         delete_all_materials()
