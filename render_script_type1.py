@@ -506,6 +506,7 @@ def render_script_type1():
         if not os.path.exists(uid):
             print('object not exist, check the file path')
             continue
+        # clear
         bpy.ops.object.select_by_type(type='MESH')
         bpy.ops.object.delete()
 
@@ -532,11 +533,15 @@ def render_script_type1():
 
 
         mesh_objects = [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
+        # move to center
         normalize_scene()
+        # log detile size
         bbox_center, bbox_size = compute_bounding_box(mesh_objects)
         distance = max(bbox_size.x, bbox_size.y, bbox_size.z)
         dis.append(distance)
+        # set material
         create_vertex_color_shaders()
+        # num_images
         num_images = 8
         camera_pose = "z-circular-elevated"
         cur_path = os.path.join(args.parent_dir, 'rendered_imgs/%s'%(uid.split('/')[-1].split('.')[0]))

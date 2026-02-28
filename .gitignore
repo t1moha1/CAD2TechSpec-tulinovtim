@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Runtime logs
+*.log
+
+# Local exports / temp data
+example_object_path.txt
+promt.md
+answer.md
+
+# Generated pipeline outputs
+example_material/rendered_imgs/
+example_material/collages_3/
+example_material/collages_4/
+example_material/collages_6/
+results_no_rag/
+results_rag/
+metrics/

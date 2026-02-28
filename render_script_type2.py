@@ -20,11 +20,73 @@ import pickle
 MAX_DEPTH = 5.0
 FORMAT_VERSION = 6
 
-# Set by main(), these constants are passed to the script to avoid
-# duplicating them across multiple files.
 UNIFORM_LIGHT_DIRECTION = None
 BASIC_AMBIENT_COLOR = None
 BASIC_DIFFUSE_COLOR = None
+DEFAULT_NUM_IMAGES = 20
+DEFAULT_LIGHT_MODE = "uniform"
+DEFAULT_CAMERA_POSE = "random"
+DEFAULT_CAMERA_DIST_MIN = 2.0
+DEFAULT_CAMERA_DIST_MAX = 2.0
+DEFAULT_FAST_MODE = True
+DEFAULT_EXTRACT_MATERIAL = True
+DEFAULT_DELETE_MATERIAL = False
+
+
+def get_raw_script_args(argv):
+    if "--" not in argv:
+        raise SystemExit("Missing '--'. Use: blender -b -P render_script_type2.py -- <script args>")
+    return argv[argv.index("--") + 1 :]
+
+
+def parse_args(raw_args):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--object_path_pkl', type=str, default='./example_material/example_object_path.pkl')
+    parser.add_argument('--parent_dir', type=str, default='./example_material')
+    parser.add_argument("--num_images", type=int, default=20)
+    parser.add_argument("--backend", type=str, default="BLENDER_EEVEE")
+    parser.add_argument("--light_mode", type=str, default="uniform")
+    parser.add_argument("--camera_pose", type=str, default="random")
+    parser.add_argument("--camera_dist_min", type=float, default=2.0)
+    parser.add_argument("--camera_dist_max", type=float, default=2.0)
+    parser.add_argument("--fast_mode", action="store_true", default=True)
+    parser.add_argument("--extract_material", action="store_true", default=True)
+    parser.add_argument("--delete_material", action="store_true")
+
+    default_uniform_light_direction = [str(x) for x in [0.09387503, -0.63953443, -0.7630093]]
+    parser.add_argument(
+        "--uniform_light_direction",
+        nargs='+',
+        default=default_uniform_light_direction,
+        help="Set the uniform light direction"
+    )
+    parser.add_argument("--basic_ambient", type=float, default=0.3)
+    parser.add_argument("--basic_diffuse", type=float, default=0.7)
+    return parser.parse_args(raw_args)
+
+
+def build_render_options(args):
+    options = {
+        "num_images": args.num_images if isinstance(args.num_images, int) and args.num_images > 0 else DEFAULT_NUM_IMAGES,
+        "light_mode": args.light_mode if args.light_mode in ["random", "uniform", "camera", "basic"] else DEFAULT_LIGHT_MODE,
+        "camera_pose": args.camera_pose if args.camera_pose in ["random", "z-circular", "z-circular-elevated"] else DEFAULT_CAMERA_POSE,
+        "camera_dist_min": args.camera_dist_min if args.camera_dist_min > 0 else DEFAULT_CAMERA_DIST_MIN,
+        "camera_dist_max": args.camera_dist_max if args.camera_dist_max > 0 else DEFAULT_CAMERA_DIST_MAX,
+        "fast_mode": args.fast_mode if isinstance(args.fast_mode, bool) else DEFAULT_FAST_MODE,
+        "extract_material": args.extract_material if isinstance(args.extract_material, bool) else DEFAULT_EXTRACT_MATERIAL,
+        "delete_material": args.delete_material if isinstance(args.delete_material, bool) else DEFAULT_DELETE_MATERIAL,
+    }
+
+    if options["camera_dist_min"] > options["camera_dist_max"]:
+        options["camera_dist_min"], options["camera_dist_max"] = options["camera_dist_max"], options["camera_dist_min"]
+
+    if options["light_mode"] == "basic" and options["extract_material"]:
+        options["extract_material"] = False
+
+    if options["delete_material"] and options["extract_material"]:
+        options["extract_material"] = False
+
+    return options
 
 
 def clear_scene():
@@ -90,22 +152,12 @@ def scene_meshes():
 
 
 def normalize_scene():
-    #if len(list(scene_root_objects())) > 1:
-    #    # Create an empty object to be used as a parent for all root objects
-    #    parent_empty = bpy.data.objects.new("ParentEmpty", None)
-    #    bpy.context.scene.collection.objects.link(parent_empty)
-
-    #    # Parent all root objects to the empty object
-    #    for obj in scene_root_objects():
-    #        if obj != parent_empty:
-    #            obj.parent = parent_empty
     bbox_min, bbox_max = scene_bbox()
     scale = 1 / max(bbox_max - bbox_min)
 
     for obj in scene_root_objects():
         obj.scale = obj.scale * scale
 
-    # Apply scale to matrix_world.
     bpy.context.view_layer.update()
 
     bbox_min, bbox_max = scene_bbox()
@@ -117,7 +169,6 @@ def normalize_scene():
 
 
 def create_camera():
-    # https://b3d.interplanety.org/en/how-to-create-camera-through-the-blender-python-api/
     camera_data = bpy.data.cameras.new(name="Camera")
     camera_object = bpy.data.objects.new("Camera", camera_data)
     bpy.context.scene.collection.objects.link(camera_object)
@@ -128,7 +179,6 @@ def set_camera(direction, camera_dist=2.0):
     camera_pos = -camera_dist * direction
     bpy.context.scene.camera.location = camera_pos
 
-    # https://blender.stackexchange.com/questions/5210/pointing-the-camera-in-a-particular-direction-programmatically
     rot_quat = direction.to_track_quat("-Z", "Y")
     bpy.context.scene.camera.rotation_euler = rot_quat.to_euler()
 
@@ -165,7 +215,6 @@ def place_camera(time, camera_pose_mode="random", camera_dist_min=2.0, camera_di
 
 
 def create_light(location, energy=1.0, angle=0.5 * math.pi / 180):
-    # https://blender.stackexchange.com/questions/215624/how-to-create-a-light-with-the-python-api-in-blender-2-92
     light_data = bpy.data.lights.new(name="Light", type="SUN")
     light_data.energy = energy
     light_data.angle = angle
@@ -193,7 +242,6 @@ def create_camera_light():
 
 def create_uniform_light(backend):
     clear_lights()
-    # Random direction to decorrelate axis-aligned sides.
     pos = Vector(UNIFORM_LIGHT_DIRECTION)
     angle = 0.0092 if backend == "CYCLES" else math.pi
     create_light(pos, energy=5.0, angle=angle)
@@ -201,29 +249,20 @@ def create_uniform_light(backend):
 
 
 def create_vertex_color_shaders():
-    # By default, Blender will ignore vertex colors in both the
-    # Eevee and Cycles backends, since these colors aren't
-    # associated with a material.
-    #
-    # What we do here is create a simple material shader and link
-    # the vertex color to the material color.
     for obj in bpy.context.scene.objects.values():
         if not isinstance(obj.data, (bpy.types.Mesh)):
             continue
 
         if len(obj.data.materials):
-            # We don't want to override any existing materials.
             continue
 
         color_keys = (obj.data.vertex_colors or {}).keys()
         if not len(color_keys):
-            # Many objects will have no materials *or* vertex colors.
             continue
 
         mat = bpy.data.materials.new(name="VertexColored")
         mat.use_nodes = True
 
-        # There should be a Principled BSDF by default.
         bsdf_node = None
         for node in mat.node_tree.nodes:
             if node.type == "BSDF_PRINCIPLED":
@@ -234,7 +273,6 @@ def create_vertex_color_shaders():
         for input in bsdf_node.inputs:
             socket_map[input.name] = input
 
-        # Make sure nothing lights the object except for the diffuse color.
         socket_map["Specular"].default_value = 0.0
         socket_map["Roughness"].default_value = 1.0
 
@@ -268,7 +306,6 @@ def find_materials():
 def delete_all_materials():
     for obj in bpy.context.scene.objects.values():
         if isinstance(obj.data, bpy.types.Mesh):
-            # https://blender.stackexchange.com/questions/146714/removing-all-material-slots-in-one-go
             obj.data.materials.clear()
 
 
@@ -278,8 +315,6 @@ def setup_material_extraction_shaders(capturing_material_alpha: bool):
     an actual reflective color. Returns a function to undo the changes to the
     materials.
     """
-    # Objects can share materials, so we first find all of the
-    # materials in the project, and then modify them each once.
     undo_fns = []
     for mat in find_materials():
         undo_fn = setup_material_extraction_shader_for_material(mat, capturing_material_alpha)
@@ -291,9 +326,6 @@ def setup_material_extraction_shaders(capturing_material_alpha: bool):
 def setup_material_extraction_shader_for_material(mat, capturing_material_alpha: bool):
     mat.use_nodes = True
 
-    # By default, most imported models should use the regular
-    # "Principled BSDF" material, so we should always find this.
-    # If not, this shader manipulation logic won't work.
     bsdf_node = None
     for node in mat.node_tree.nodes:
         if node.type == "BSDF_PRINCIPLED":
@@ -312,9 +344,6 @@ def setup_material_extraction_shader_for_material(mat, capturing_material_alpha:
     old_emission_strength = get_socket_value(mat.node_tree, socket_map["Emission Strength"])
     old_specular = get_socket_value(mat.node_tree, socket_map["Specular"])
 
-    # Make sure the base color of all objects is black and the opacity
-    # is 1, so that we are effectively just telling the shader what color
-    # to make the pixels.
     clear_socket_input(mat.node_tree, socket_map["Base Color"])
     socket_map["Base Color"].default_value = [0, 0, 0, 1]
     clear_socket_input(mat.node_tree, socket_map["Alpha"])
@@ -363,7 +392,6 @@ def set_socket_value(tree, socket, socket_and_default):
     clear_socket_input(tree, socket)
     old_source_socket, default = socket_and_default
     if isinstance(default, float) and not isinstance(socket.default_value, float):
-        # Codepath for setting Emission to a previous alpha value.
         socket.default_value = [default] * 3 + [1.0]
     else:
         socket.default_value = default
@@ -378,7 +406,6 @@ def setup_nodes(output_path, capturing_material_alpha: bool = False, basic_light
     for node in tree.nodes:
         tree.nodes.remove(node)
 
-    # Helpers to perform math on links and constants.
     def node_op(op: str, *args, clamp=False):
         node = tree.nodes.new(type="CompositorNodeMath")
         node.operation = op
@@ -415,7 +442,6 @@ def setup_nodes(output_path, capturing_material_alpha: bool = False, basic_light
     else:
         raw_color_socket = input_sockets["Image"]
         if basic_lighting:
-            # Compute diffuse lighting
             normal_xyz = tree.nodes.new(type="CompositorNodeSeparateXYZ")
             tree.links.new(input_sockets["Normal"], normal_xyz.inputs[0])
             normal_x, normal_y, normal_z = [normal_xyz.outputs[i] for i in range(3)]
@@ -427,9 +453,7 @@ def setup_nodes(output_path, capturing_material_alpha: bool = False, basic_light
                 ),
             )
             diffuse = node_abs(dot)
-            # Compute ambient + diffuse lighting
             brightness = node_add(BASIC_AMBIENT_COLOR, node_mul(BASIC_DIFFUSE_COLOR, diffuse))
-            # Modulate the RGB channels using the total brightness.
             rgba_node = tree.nodes.new(type="CompositorNodeSepRGBA")
             tree.links.new(raw_color_socket, rgba_node.inputs[0])
             combine_node = tree.nodes.new(type="CompositorNodeCombRGBA")
@@ -438,9 +462,6 @@ def setup_nodes(output_path, capturing_material_alpha: bool = False, basic_light
             tree.links.new(rgba_node.outputs[3], combine_node.inputs[3])
             raw_color_socket = combine_node.outputs[0]
 
-        # We apply sRGB here so that our fixed-point depth map and material
-        # alpha values are not sRGB, and so that we perform ambient+diffuse
-        # lighting in linear RGB space.
         color_node = tree.nodes.new(type="CompositorNodeConvertColorSpace")
         color_node.from_color_space = "Linear Rec.2020"
         color_node.to_color_space = "sRGB"
@@ -448,16 +469,12 @@ def setup_nodes(output_path, capturing_material_alpha: bool = False, basic_light
         color_socket = color_node.outputs[0]
     split_node = tree.nodes.new(type="CompositorNodeSepRGBA")
     tree.links.new(color_socket, split_node.inputs[0])
-    # Create separate file output nodes for every channel we care about.
-    # The process calling this script must decide how to recombine these
-    # channels, possibly into a single image.
     for i, channel in enumerate("rgba") if not capturing_material_alpha else [(0, "MatAlpha")]:
         output_node = tree.nodes.new(type="CompositorNodeOutputFile")
         output_node.base_path = f"{output_path}_{channel}"
         links.new(split_node.outputs[i], output_node.inputs[0])
 
     if capturing_material_alpha:
-        # No need to re-write depth here.
         return
 
     depth_out = node_clamp(node_mul(input_sockets["Depth"], 1 / MAX_DEPTH))
@@ -467,34 +484,17 @@ def setup_nodes(output_path, capturing_material_alpha: bool = False, basic_light
 
 
 def render_scene(output_path, fast_mode: bool, extract_material: bool, basic_lighting: bool):
-    # use_workbench=True
     use_workbench = False
     bpy.context.scene.render.engine == "CYCLES"
     bpy.context.scene.cycles.samples = 16
     bpy.context.scene.cycles.use_denoising = True
     bpy.context.scene.cycles.denoiser = 'OPENIMAGEDENOISE'
-    #use_workbench = bpy.context.scene.render.engine == "BLENDER_WORKBENCH"
-    #if use_workbench:
-    #    # We must use a different engine to compute depth maps.
-    #    bpy.context.scene.render.engine = "BLENDER_EEVEE"
-    #    bpy.context.scene.eevee.taa_render_samples = 1  # faster, since we discard image.
-    #if fast_mode:
-    #    if bpy.context.scene.render.engine == "BLENDER_EEVEE":
-    #        bpy.context.scene.eevee.taa_render_samples = 1
-    #    elif bpy.context.scene.render.engine == "CYCLES":
-    #        # bpy.context.scene.cycles.samples = 256
-    #        bpy.context.scene.cycles.samples = 16
-    #else:
-    #    if bpy.context.scene.render.engine == "CYCLES":
-    #        # We should still impose a per-frame time limit
-    #        # so that we don't timeout completely.
-    #        bpy.context.scene.cycles.time_limit = 40
     bpy.context.view_layer.update()
     bpy.context.scene.use_nodes = True
     bpy.context.scene.view_layers["ViewLayer"].use_pass_z = True
     if basic_lighting:
         bpy.context.scene.view_layers["ViewLayer"].use_pass_normal = True
-    bpy.context.scene.view_settings.view_transform = "Raw"  # sRGB done in graph nodes
+    bpy.context.scene.view_settings.view_transform = "Raw"
     bpy.context.scene.render.film_transparent = True
     bpy.context.scene.render.resolution_x = 512
     bpy.context.scene.render.resolution_y = 512
@@ -512,8 +512,6 @@ def render_scene(output_path, fast_mode: bool, extract_material: bool, basic_lig
         setup_nodes(output_path, basic_lighting=basic_lighting)
         bpy.ops.render.render(write_still=True)
 
-    # The output images must be moved from their own sub-directories, or
-    # discarded if we are using workbench for the color.
     for channel_name in ["r", "g", "b", "a", "depth", *(["MatAlpha"] if extract_material else [])]:
         sub_dir = f"{output_path}_{channel_name}"
         image_path = os.path.join(sub_dir, os.listdir(sub_dir)[0])
@@ -534,21 +532,6 @@ def render_scene(output_path, fast_mode: bool, extract_material: bool, basic_lig
         bpy.context.scene.render.image_settings.color_depth = "16"
         os.remove(output_path)
         bpy.ops.render.render(write_still=True)
-        ## Re-render RGBA using workbench with texture mode, since this seems
-        ## to show the most reasonable colors when lighting is broken.
-        #bpy.context.scene.use_nodes = False
-        #bpy.context.scene.render.engine = "BLENDER_WORKBENCH"
-        #bpy.context.scene.render.image_settings.color_mode = "RGBA"
-        #bpy.context.scene.render.image_settings.color_depth = "8"
-        #bpy.context.scene.display.shading.color_type = "TEXTURE"
-        #bpy.context.scene.display.shading.light = "FLAT"
-        #if fast_mode:
-        #    # Single pass anti-aliasing.
-        #    bpy.context.scene.display.render_aa = "FXAA"
-        #os.remove(output_path)
-        #bpy.ops.render.render(write_still=True)
-        #bpy.context.scene.render.image_settings.color_mode = "BW"
-        #bpy.context.scene.render.image_settings.color_depth = "16"
 
 
 def scene_fov():
@@ -597,12 +580,7 @@ def save_rendering_dataset(
     extract_material: bool,
     delete_material: bool,
 ):
-    assert light_mode in ["random", "uniform", "camera", "basic"]
-    assert camera_pose in ["random", "z-circular", "z-circular-elevated"]
-
     basic_lighting = light_mode == "basic"
-    assert not (basic_lighting and extract_material), "cannot extract material with basic lighting"
-    assert not (delete_material and extract_material), "cannot extract material and delete it"
 
     import_model(input_path)
     bpy.context.scene.render.engine = backend
@@ -619,18 +597,14 @@ def save_rendering_dataset(
     if extract_material or basic_lighting:
         create_default_materials()
     if basic_lighting:
-        # Make sure materials are uniformly lit, so that we can light
-        # them in the output shader.
         setup_material_extraction_shaders(capturing_material_alpha=False)
 
     camera_data = []
-    # Assuming you have one camera in the scene
-    camera = bpy.context.scene.camera  
-    # Retrieve the camera's angle_x value (in radians)
+    camera = bpy.context.scene.camera
     camera_angle_x = camera.data.angle_x
 
     for i in range(num_images):
-        t = i / max(num_images - 1, 1)  # same as np.linspace(0, 1, num_images)
+        t = i / max(num_images - 1, 1)
         place_camera(
             t,
             camera_pose_mode=camera_pose,
@@ -640,16 +614,14 @@ def save_rendering_dataset(
         if light_mode == "camera":
             create_camera_light()
 
-        # Save the current camera data
-        transform_matrix = bpy.context.scene.camera.matrix_world  # 4x4 transformation matrix
-        rotation = transform_matrix.to_euler()[2]  # Assuming z-axis rotation
+        transform_matrix = bpy.context.scene.camera.matrix_world
+        rotation = transform_matrix.to_euler()[2]
 
-        # Convert matrix and rotation to lists to be JSON serializable
         transform_matrix_list = []
         for row in transform_matrix:
             transform_matrix_list.append(list(row))
         camera_data.append({
-            "file_path": f"{i:05}",  # Modify as per your actual file path naming
+            "file_path": f"{i:05}",
             "rotation": rotation,
             "transform_matrix": transform_matrix_list
         })
@@ -661,13 +633,8 @@ def save_rendering_dataset(
             basic_lighting=basic_lighting,
         )
         write_camera_metadata(os.path.join(output_path, f"{i:05}.json"))
-    # Wrap the camera data in a dictionary under the "camera_transforms" key
     output_data = {"camera_angle_x": camera_angle_x, "frames": camera_data}
-
-    # Convert data to JSON format
     camera_data_json = json.dumps(output_data, indent=4)
-
-    # Save the JSON data to a file
     with open(os.path.join(output_path, 'transforms_train.json'), 'w') as file:
         file.write(camera_data_json)
     with open(os.path.join(output_path, "info.json"), "w") as f:
@@ -678,51 +645,21 @@ def save_rendering_dataset(
             extract_material=extract_material,
             format_version=FORMAT_VERSION,
             channels=["R", "G", "B", "A", "D", *(["MatAlpha"] if extract_material else [])],
-            scale=0.5,  # The scene is bounded by [-scale, scale].
+            scale=0.5,
         )
         json.dump(info, f)
 
 
 def render_script_type2():
+    raw_args = get_raw_script_args(sys.argv)
+    args = parse_args(raw_args)
+    render_options = build_render_options(args)
+
     global UNIFORM_LIGHT_DIRECTION, BASIC_AMBIENT_COLOR, BASIC_DIFFUSE_COLOR
-
-    try:
-        dash_index = sys.argv.index("--")
-    except ValueError as exc:
-        raise ValueError("arguments must be preceded by '--'") from exc
-
-    raw_args = sys.argv[dash_index + 1 :]
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--object_path_pkl', type = str, default = './example_material/example_object_path.pkl')
-    parser.add_argument('--parent_dir', type = str, default = './example_material')
-    parser.add_argument("--num_images", type=int, default=20)
-    parser.add_argument("--backend", type=str, default="BLENDER_EEVEE")
-    parser.add_argument("--light_mode", type=str, default="uniform")
-    parser.add_argument("--camera_pose", type=str, default="random")
-    parser.add_argument("--camera_dist_min", type=float, default=2.0)
-    parser.add_argument("--camera_dist_max", type=float, default=2.0)
-    parser.add_argument("--fast_mode", action="store_true", default=True)
-    parser.add_argument("--extract_material", action="store_true", default=True)
-    parser.add_argument("--delete_material", action="store_true")
-
-    # Prevent constants from being repeated.
-    UNIFORM_LIGHT_DIRECTION = [0.09387503, -0.63953443, -0.7630093]
-    default_uniform_light_direction = [str(x) for x in UNIFORM_LIGHT_DIRECTION]
-    parser.add_argument(
-        "--uniform_light_direction",
-        nargs='+',
-        default=default_uniform_light_direction,
-        help="Set the uniform light direction"
-    )
-    parser.add_argument("--basic_ambient", type=float, default=0.3)
-    parser.add_argument("--basic_diffuse", type=float, default=0.7)
-    args = parser.parse_args(raw_args)
-
     UNIFORM_LIGHT_DIRECTION = args.uniform_light_direction
     BASIC_AMBIENT_COLOR = args.basic_ambient
     BASIC_DIFFUSE_COLOR = args.basic_diffuse
 
-    # args.backend = "CYCLES"
     uid_paths = pickle.load(open(args.object_path_pkl, 'rb'))
     for uid in uid_paths:
         if not os.path.exists(uid):
@@ -730,36 +667,19 @@ def render_script_type2():
             continue
 
         cur_output_path = os.path.join(args.parent_dir, 'rendered_imgs/%s'%(uid.split('/')[-1].split('.')[0]))
-        try:
-            save_rendering_dataset(
-                input_path=uid,
-                output_path=cur_output_path,
-                num_images=args.num_images,
-                # backend=args.backend,
-                backend="CYCLES",
-                light_mode=args.light_mode,
-                camera_pose=args.camera_pose,
-                camera_dist_min=args.camera_dist_min,
-                camera_dist_max=args.camera_dist_max,
-                fast_mode=args.fast_mode,
-                extract_material=args.extract_material,
-                delete_material=args.delete_material,
-            )
-        except:
-            save_rendering_dataset(
-                input_path=uid,
-                output_path=cur_output_path,
-                num_images=args.num_images,
-                # backend=args.backend,
-                backend="CYCLES",
-                light_mode='random',
-                camera_pose=args.camera_pose,
-                camera_dist_min=args.camera_dist_min,
-                camera_dist_max=args.camera_dist_max,
-                fast_mode=args.fast_mode,
-                extract_material=False,
-                delete_material=args.delete_material,
-            )
+        save_rendering_dataset(
+            input_path=uid,
+            output_path=cur_output_path,
+            num_images=render_options["num_images"],
+            backend="CYCLES",
+            light_mode=render_options["light_mode"],
+            camera_pose=render_options["camera_pose"],
+            camera_dist_min=render_options["camera_dist_min"],
+            camera_dist_max=render_options["camera_dist_max"],
+            fast_mode=render_options["fast_mode"],
+            extract_material=render_options["extract_material"],
+            delete_material=render_options["delete_material"],
+        )
 
 
 render_script_type2()
